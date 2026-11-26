@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="theme-color" content="#071a35">
+<title>Hormuz Run</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#071a35;font-family:system-ui,Segoe UI,sans-serif;touch-action:none}body{display:grid;place-items:center}canvas{display:block;width:min(100vw,147.06vh);height:min(100vh,68vw);background:#087eaa;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="game" width="1000" height="680" aria-label="Hormuz Run game"></canvas>
+<script>
+(() => {
+  const c=document.querySelector('#game'), g=c.getContext('2d'), W=1000,H=680;
+  const memorialPortrait=new Image();
+  memorialPortrait.src='agha.jpg';
+  memorialPortrait.onerror=()=>{memorialPortrait.onerror=null;memorialPortrait.src='memorial_portrait.svg'};
+  const SPACE_UNLOCK_SCORE=1000;
+  const WEAPON_UNLOCK_SCORE=2000;
+  const WIN_SCORE=20000;
+  const DIFFICULTY_SCORE_STEP=1000;
+  const BASE_HULL=4;
+  const PLAYER_TORPEDO_SPEED=680;
+  const ENEMY_TORPEDO_SPEED=125;
+  const ENEMY_DESTROY_SCORE=180;
+  let state='menu', score=0, coins=0, health=BASE_HULL, maxHealth=BASE_HULL, stage=1, cargo=0, goal=4, boost=100, space=false;
+  let notice=0, noticeLabel='', elapsed=0, spawn=0, enemySpawn=0, shotClock=0, last=0, difficulty=0, hurtTimer=0;
+  let audioEnabled=true, graphicsQuality='high', audioContext=null;
+  let language=localStorage.getItem('hormuz-language')==='fa'?'fa':'en';
+  let musicVolume=.65,effectsVolume=.5,musicTimer=null,musicStep=0;
+  let ship={x:105,y:350,vx:0,vy:0};
+  let crates=[], hazards=[], particles=[], bullets=[], enemyBullets=[], enemies=[], keys=new Set(), pointers=new Map();
+  let upgrades={rapid:0,cannon:0,damage:1,armor:0,engine:0};
+  let tankers=[{x:180,y:320,speed:30,flag:'ir'},{x:490,y:410,speed:38,flag:'us'},
+  {x:820,y:285,speed:34,flag:'ir'},{x:1080,y:490,speed:28,flag:'us'}];
+  let stars=Array.from({length:100},()=>({x:Math.random()*W,y:Math.random()*H,r:1+Math.random()*2,p:Math.random()*7}));
+  let buoys=Array.from({length:18},()=>({x:Math.random()*W,y:Math.random()*H,p:Math.random()*7}));
+  const rnd=(a,b)=>a+Math.random()*(b-a), clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
+  function start(){state='playing';
+    if(audioEnabled){try{audioContext??=new (window.AudioContext||window.webkitAudioContext)();audioContext.resume();startMusic()}catch(_error){}}
+    score=0;coins=0;
+    health=maxHealth;stage=1;
+    cargo=0;goal=4;
+    boost=100;space=false;
+    notice=0;noticeLabel='';
+    elapsed=0;spawn=enemySpawn=shotClock=hurtTimer=0;
+    difficulty=0;ship={x:105,y:350,vx:0,vy:0};
+    crates=[];hazards=[];
+    particles=[];bullets=[];
+    enemyBullets=[];enemies=[];
+    tankers=[{x:180,y:320,speed:30,flag:'ir'},{x:490,y:410,speed:38,flag:'us'},{x:820,y:285,speed:34,flag:'ir'},{x:1080,y:490,speed:28,flag:'us'}];pointers.clear()}
+  function burst(x,y,color,n){if(graphicsQuality==='low')n=Math.ceil(n*.45);for(let i=0;
+    i<n;i++){let a=Math.random()*Math.PI*2,s=rnd(35,160);
+      particles.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,t:rnd(.25,.7),color})}}
+  function playTone(frequency,duration=.08,wave='sine'){if(!audioEnabled||effectsVolume<=0)return;try{
+      audioContext??=new (window.AudioContext||window.webkitAudioContext)();
+      if(audioContext.state==='suspended')audioContext.resume();
+      const oscillator=audioContext.createOscillator(),gain=audioContext.createGain();
+      oscillator.type=wave;oscillator.frequency.value=frequency;gain.gain.setValueAtTime(.045*effectsVolume,audioContext.currentTime);
+      gain.gain.exponentialRampToValueAtTime(.001,audioContext.currentTime+duration);oscillator.connect(gain);gain.connect(audioContext.destination);
+      oscillator.start();oscillator.stop(audioContext.currentTime+duration);
+    }catch(_error){}}
+  function musicNote(frequency,duration,volume,wave='triangle'){if(!audioEnabled||!audioContext||volume<=0)return;
+    const oscillator=audioContext.createOscillator(),gain=audioContext.createGain(),now=audioContext.currentTime;
+    oscillator.type=wave;oscillator.frequency.value=frequency;gain.gain.setValueAtTime(.001,now);
+    gain.gain.exponentialRampToValueAtTime(Math.max(.001,volume),now+.04);
+    gain.gain.exponentialRampToValueAtTime(.001,now+duration);
+    oscillator.connect(gain);gain.connect(audioContext.destination);oscillator.start(now);oscillator.stop(now+duration+.02);}
+  function startMusic(){if(!audioEnabled||!audioContext||musicTimer||musicVolume<=0)return;scheduleMusic()}
+  function stopMusic(){if(musicTimer)clearTimeout(musicTimer);musicTimer=null}
+  function scheduleMusic(){if(!audioEnabled||musicVolume<=0||!audioContext){musicTimer=null;return}
+    let intensity=Math.min(10,difficulty),tempo=Math.max(300,480-difficulty*3);
+    const tune=[293.66,349.23,392,440,392,349.23,293.66,261.63,220,261.63,293.66,349.23,392,349.23,293.66,220];
+    const note=tune[musicStep%tune.length];musicNote(note,.42,musicVolume*(.14+intensity*.008),'triangle');
+    if(musicStep%4===0)musicNote(note/2,1.6,musicVolume*(.08+intensity*.004),'sine');
+    if(musicStep%2===0)musicNote(73.42,.16,musicVolume*(.2+intensity*.012),'sawtooth');
+    musicStep++;musicTimer=setTimeout(()=>{musicTimer=null;scheduleMusic()},tempo);}
+  function spawnObject(){let o={x:W+30,y:rnd(130,570),speed:rnd(95,145)+stage*6+Math.min(15,difficulty*.3),p:rnd(0,7)};(Math.random()<.82?crates:hazards).push(o)}
+  function controls(){let a=new Set(keys);
+    for(const v of pointers.values())a.add(v);return a}
+  function update(dt){
+    if(state!=='playing')return;
+    dt=Math.min(dt,.04);elapsed+=dt;
+    spawn+=dt;enemySpawn+=dt;
+    shotClock-=dt;hurtTimer=Math.max(0,hurtTimer-dt);
+    notice=Math.max(0,notice-dt);
+    difficulty=Math.floor(score/1000)+Math.floor(Math.max(0,score-19000)/100)*2;
+    let k=controls(),dx=(k.has('right')?1:0)-(k.has('left')?1:0),dy=(k.has('down')?1:0)-(k.has('up')?1:0);
+    let fast=k.has('boost')&&boost>0;
+    boost=fast?Math.max(0,boost-42*dt):Math.min(100,boost+18*dt);if(dx&&dy){dx*=.707;
+      dy*=.707}
+    let speed=(fast?390:270)+upgrades.engine*24;ship.vx=(ship.vx+dx*speed*5*dt)*(1-4.7*dt);
+    ship.vy=(ship.vy+dy*speed*5*dt)*(1-4.7*dt);
+    ship.x=clamp(ship.x+ship.vx*dt+20*dt,38,962);
+    ship.y=clamp(ship.y+ship.vy*dt,55,625);
+    if(spawn>Math.max(.75,1.65-stage*.04-Math.min(.4,difficulty*.008))){spawn=0;
+      spawnObject()}
+    for(const t of tankers){t.x-=t.speed*dt;if(t.x<-100)t.x=W+rnd(80,360)}
+    for(const o of [...crates,...hazards]){o.x-=o.speed*dt;
+      o.y+=Math.sin(elapsed*2+o.p)*18*dt}
+    crates=crates.filter(o=>o.x>-50);hazards=hazards.filter(o=>o.x>-50);
+    for(const o of [...crates])if(Math.hypot(ship.x-o.x,ship.y-o.y)<34){
+      crates.splice(crates.indexOf(o),1);let before=score;
+      score+=100+stage*20;coins+=2+Math.floor(stage/2);
+      cargo++;burst(o.x,o.y,'#ffd166',12);playTone(520,.08,'sine');
+      if(score>=SPACE_UNLOCK_SCORE&&!space){space=true;notice=3.5;
+        noticeLabel='1,000 POINTS — INTO SPACE!';burst(ship.x,ship.y,'#ad91ff',40)}
+      if(before<WEAPON_UNLOCK_SCORE&&score>=WEAPON_UNLOCK_SCORE){notice=3.5;
+        noticeLabel='CANNONS UNLOCKED — HOLD FIRE!';burst(ship.x,ship.y,'#ffbd69',24)}
+      if(cargo>=goal){cargo=0;stage++;goal=4}
+    }
+    for(const o of [...hazards])if(Math.hypot(ship.x-o.x,ship.y-o.y)<31){hazards.splice(hazards.indexOf(o),1);
+      damagePlayer()}
+    if(score>=WEAPON_UNLOCK_SCORE&&k.has('fire')&&shotClock<=0){
+      let spread=upgrades.cannon?[-8,8]:[0];
+      for(const offset of spread)bullets.push({x:ship.x+28,y:ship.y+offset,vx:PLAYER_TORPEDO_SPEED,vy:offset?offset*1.3:0,damage:upgrades.damage});
+      playTone(760,.05,'square');
+      shotClock=Math.max(.12,.28-upgrades.rapid*.035);
+    }
+    if(score>=WEAPON_UNLOCK_SCORE&&enemySpawn>Math.max(.5,2.2-difficulty*.035)){
+      enemySpawn=0;
+      enemies.push({x:W+40,y:rnd(140,570),hp:1+Math.floor(difficulty/7),speed:48+difficulty*2,fire:rnd(2.8,3.6),phase:rnd(0,7)});
+    }
+    for(const e of enemies){
+      e.x-=e.speed*dt;
+      e.y+=Math.sin(elapsed*2+e.phase)*14*dt;e.fire-=dt;
+      if(e.fire<=0&&e.x<W-20){let a=Math.atan2(ship.y-e.y,ship.x-e.x);enemyBullets.push({x:e.x-20,y:e.y,vx:Math.cos(a)*(ENEMY_TORPEDO_SPEED+difficulty*2.5),vy:Math.sin(a)*(ENEMY_TORPEDO_SPEED+difficulty*2.5)});
+        e.fire=Math.max(.65,rnd(2.8,3.6)-difficulty*.035)}
+    }
+    enemies=enemies.filter(e=>e.x>-70);
+    for(const b of bullets){b.x+=b.vx*dt;
+      b.y+=b.vy*dt}
+    for(const b of enemyBullets){b.x+=b.vx*dt;b.y+=b.vy*dt}
+    bullets=bullets.filter(b=>b.x<W+30&&b.y>0&&b.y<H);
+    enemyBullets=enemyBullets.filter(b=>b.x>-30&&b.y>0&&b.y<H);
+    for(const b of [...bullets])for(const e of [...enemies])if(Math.hypot(b.x-e.x,b.y-e.y)<27){
+      bullets.splice(bullets.indexOf(b),1);
+      e.hp-=b.damage;burst(b.x,b.y,'#ffd166',5);
+      if(e.hp<=0){enemies.splice(enemies.indexOf(e),1);score+=ENEMY_DESTROY_SCORE+difficulty*20;
+        coins+=3;burst(e.x,e.y,'#ff745f',24)}break;
+    }
+    for(const b of [...enemyBullets])if(Math.hypot(ship.x-b.x,ship.y-b.y)<20){enemyBullets.splice(enemyBullets.indexOf(b),1);damagePlayer()}
+    for(const e of [...enemies])if(Math.hypot(ship.x-e.x,ship.y-e.y)<34){enemies.splice(enemies.indexOf(e),1);
+      damagePlayer()}
+    particles.forEach(p=>{p.x+=p.vx*dt;p.y+=p.vy*dt;
+      p.t-=dt});particles=particles.filter(p=>p.t>0);if(score>=WIN_SCORE)state='win';}
+  function damagePlayer(){if(hurtTimer>0)return;health--;playTone(180,.15,'sawtooth');
+    hurtTimer=1.2;score=Math.max(0,score-20);
+    burst(ship.x,ship.y,'#ff735c',18);if(health<=0)state='over'}
+  const faText={
+    'START':'شروع','HORMUZ RUN':'سفر هرمز','SPACE RUN':'سفر فضایی','SETTINGS':'تنظیمات','STORE [B]':'فروشگاه [B]','STORE':'فروشگاه','HULL':'بدنه','ENEMY':'دشمن','IRAN':'ایران','OMAN':'عمان','QESHM':'قشم','HORMUZ':'هرمز','SPACE RADAR':'رادار فضایی','BOOST':'شتاب','FIRE':'شلیک','LOCK':'قفل','MEMORIAL':'یادبود','SAYYED ALI KHAMENEI':'سید علی خامنه‌ای','IN REMEMBRANCE':'به یاد او','A Persian Gulf arcade voyage':'ماجرایی آرکید در خلیج فارس','START GAME':'شروع بازی','HOW TO PLAY':'راهنمای بازی','CARGO • SHIPS • SPACE • UPGRADES':'محموله • کشتی‌ها • فضا • ارتقا','VOYAGE OVER':'پایان سفر','شکست پایان راه نیست آغاز تجربه‌ای تازه است':'شکست پایان راه نیست؛ آغاز تجربه‌ای تازه است','CONGRATULATIONS, CAPTAIN!':'تبریک، ناخدا!','پیروزی حاصل ایمان، اراده و تلاش است.':'پیروزی حاصل ایمان، اراده و تلاش است.','20,000 POINTS REACHED':'امتیاز ۲۰٬۰۰۰ رسید','TAP OR PRESS ENTER TO TRY AGAIN':'برای تلاش دوباره لمس کنید یا Enter بزنید','TAP OR PRESS ENTER TO PLAY AGAIN':'برای بازی دوباره لمس کنید یا Enter بزنید','ON':'روشن','OFF':'خاموش','MUSIC':'موسیقی','EFFECTS':'افکت‌ها','GRAPHICS':'کیفیت تصویر','HIGH':'بالا','LOW':'پایین','BACK':'بازگشت','Move: WASD, arrow keys or touch arrows':'حرکت: WASD، کلیدهای جهت یا فلش‌های لمسی','Boost: Space or purple button':'شتاب: Space یا دکمهٔ بنفش','Fire unlocks at 2,000 points: F or FIRE button':'شلیک از امتیاز ۲٬۰۰۰: کلید F یا دکمهٔ شلیک','Store: B or STORE button • collect cargo for coins':'فروشگاه: کلید B؛ برای سکه محموله جمع کنید','Reach 1,000 points to enter the moving star field':'با رسیدن به ۱٬۰۰۰ امتیاز وارد میدان ستاره‌ای شوید','CAPTAIN’S STORE':'فروشگاه ناخدا','Tap an item to buy':'برای خرید یک مورد را لمس کنید','Rapid fire':'شلیک سریع','Double cannon':'توپ دوگانه','Heavy torpedoes':'اژدر سنگین','Reinforced hull':'بدنهٔ تقویت‌شده','Engine upgrade':'ارتقای موتور','Repair hull':'تعمیر بدنه','Owned • two-shot volley':'خریداری‌شده • شلیک دوتایی','Adds a second barrel':'یک لولهٔ دوم اضافه می‌کند','Restore to':'بازیابی تا','faster shots':'شلیک سریع‌تر','faster movement':'حرکت سریع‌تر','Coins':'سکه‌ها','BUY':'خرید','MAX':'حداکثر','FINAL SCORE':'امتیاز نهایی','CLOSE  [B]':'بستن [B]','AUDIO':'صدا','LANGUAGE':'زبان','PERSIAN':'فارسی','ENGLISH':'انگلیسی','THREAT':'تهدید','CANNONS UNLOCK AT 2,000':'توپ‌ها در ۲٬۰۰۰ باز می‌شوند','HOLD FIRE TO SHOOT':'برای شلیک نگه دارید','SCORE':'امتیاز','STAGE':'مرحله','CARGO':'محموله','LEFT':'باقی‌مانده','END':'پایان'};
+  function translate(s){if(language!=='fa')return s;let v=String(s);if(faText[v])return faText[v];
+    v=v.replace(/^AUDIO: (ON|OFF)$/,(_,a)=>`صدا: ${faText[a]}`).replace(/^GRAPHICS: (HIGH|LOW)$/,(_,a)=>`کیفیت تصویر: ${faText[a]}`).replace(/^LANGUAGE: (PERSIAN|ENGLISH)$/,(_,a)=>`زبان: ${faText[a]}`)
+      .replace(/^MUSIC (\d+)%$/,(_,n)=>`موسیقی ${n}٪`).replace(/^EFFECTS (\d+)%$/,(_,n)=>`افکت‌ها ${n}٪`)
+      .replace(/^SCORE (.+)$/,(_,n)=>`امتیاز ${n}`).replace(/^STAGE (.+)$/,(_,n)=>`مرحله ${n}`).replace(/^CARGO (.+)$/,(_,n)=>`محموله ${n}`).replace(/^COINS: (\d+).*$/,(_,n)=>`سکه‌ها: ${n} • برای خرید لمس کنید`)
+      .replace(/^FINAL SCORE\s+(\d+)$/,(_,n)=>`امتیاز نهایی ${n}`).replace(/^COINS (\d+)$/,(_,n)=>`سکه ${n}`).replace(/^BUY (\d+)$/,(_,n)=>`خرید ${n}`).replace(/^Level (\d+)\/5 • faster shots$/,(_,n)=>`سطح ${n}/۵ • شلیک سریع‌تر`).replace(/^Level (\d+)\/3 • faster movement$/,(_,n)=>`سطح ${n}/۳ • حرکت سریع‌تر`).replace(/^Damage (\d+)\/4$/,(_,n)=>`قدرت ${n}/۴`).replace(/^Hull capacity (\d+)\/5$/,(_,n)=>`ظرفیت بدنه ${n}/۵`).replace(/^THREAT (\d+)  •  (.*)$/,(_,n,t)=>`تهدید ${n} • ${faText[t]||t}`).replace(/^LEFT (.+)$/,(_,n)=>`باقی‌مانده ${n}`);
+    return v}
+  function text(s,x,y,size=18,color='#fff',align='center'){s=translate(s);g.direction=language==='fa'?'rtl':'ltr';g.font=`800 ${size}px system-ui,Segoe UI,sans-serif`;
+    g.textAlign=align;g.textBaseline='middle';
+    g.lineJoin='round';g.lineWidth=4;
+    g.strokeStyle='#071c38';g.strokeText(s,x,y);
+    g.fillStyle=color;g.fillText(s,x,y)}
+  function circle(x,y,r,color){g.fillStyle=color;
+    g.beginPath();g.arc(x,y,r,0,Math.PI*2);
+    g.fill()}
+  function drawIranFlag(x,y,w,h){
+    g.save();g.fillStyle='#239f40';g.fillRect(x,y,w,h/3);g.fillStyle='#fff';g.fillRect(x,y+h/3,w,h/3);
+    g.fillStyle='#da0000';g.fillRect(x,y+2*h/3,w,h/3);
+    g.font=`bold ${Math.floor(h*.3)}px system-ui,sans-serif`;g.textAlign='center';g.textBaseline='middle';
+    g.fillStyle='#da0000';g.fillText('الله',x+w/2,y+h/2+1);
+    g.strokeStyle='#f4e6c2';g.lineWidth=2;g.strokeRect(x,y,w,h);g.restore()}
+  function draw(){g.clearRect(0,0,W,H);
+    if(space){g.fillStyle='#080d2c';
+      g.fillRect(0,0,W,H);for(let starIndex=0;starIndex<stars.length;starIndex++){
+        if(graphicsQuality==='low'&&starIndex%2)continue;
+        const s=stars[starIndex];let a=.45+.5*(.5+.5*Math.sin(elapsed*3+s.p));
+        let travel=(elapsed*(24+s.r*20+difficulty*5))%(W+12);
+        let sx=(s.x-travel+W+12)%(W+12)-6;
+        let sy=s.y+Math.sin(elapsed*1.5+s.p)*.7;
+        g.strokeStyle=`rgba(192,215,255,${a*.65})`;g.lineWidth=s.r;
+        g.beginPath();g.moveTo(sx+s.r,sy);g.lineTo(sx+5+s.r*2,sy);g.stroke();
+        circle(sx,sy,s.r,`rgba(192,215,255,${a})`)
+      }
+      circle(800,170,90,'#34215e');circle(800,170,62,'#4b2c76');
+      circle(800,170,22,'#f1a66e');
+    }else{g.fillStyle='#087eaa';
+      g.fillRect(0,0,W,H);for(let i=0;
+      i<8;i++){g.fillStyle=i%2?'#0b88af':'#0879a2';
+        g.fillRect(0,75+i*78,W,38)}
+      for(const b of buoys){b.x-=.7;if(b.x<0)b.x=W;
+        let y=b.y+Math.sin(elapsed*2+b.p)*3;g.fillStyle='#83d4d8';
+        g.fillRect(b.x-5,y,10,3)}
+      g.fillStyle='#d7bc83';g.beginPath();
+      g.moveTo(0,0);g.lineTo(W,0);
+      g.lineTo(W,73);for(let x=W;
+      x>=0;x-=100)g.lineTo(x,78+Math.sin(x*.04)*10);
+      g.fill();
+      g.fillStyle='#c9a76d';
+      g.beginPath();g.moveTo(0,H);
+      g.lineTo(W,H);g.lineTo(W,600);
+      for(let x=W;x>=0;
+      x-=100)g.lineTo(x,596+Math.sin(x*.035)*10);g.fill();
+      g.fillStyle='#c1a578';g.beginPath();
+      g.ellipse(145,525,42,24,0,0,Math.PI*2);g.fill();
+      g.fillStyle='#788b55';g.beginPath();
+      g.moveTo(115,524);g.lineTo(140,488);
+      g.lineTo(160,524);g.fill();
+      let pulse=12+Math.sin(elapsed*4)*2;
+      g.strokeStyle='#67f0bd';g.lineWidth=3;g.beginPath();
+      g.arc(105,350,pulse,0,Math.PI*2);g.stroke();
+      circle(105,350,5,'#67f0bd');text('START',105,374,10,'#d7ffe9');
+    }
+    if(!space)for(const t of tankers)drawTanker(t.x,t.y,t.flag);
+    for(const o of crates){let y=o.y+Math.sin(elapsed*2+o.p)*3;if(space){g.fillStyle='#735bd4';
+        g.beginPath();g.moveTo(o.x,y-20);
+        g.lineTo(o.x+20,y);g.lineTo(o.x,y+20);
+        g.lineTo(o.x-20,y);g.fill();
+        circle(o.x,y,6,'#efffff')}else{circle(o.x,y,17,'#a96536');g.strokeStyle='#f6c06b';
+        g.lineWidth=3;g.strokeRect(o.x-16,y-12,32,24);
+        g.beginPath();g.moveTo(o.x-9,y-8);
+        g.lineTo(o.x+9,y+8);g.moveTo(o.x+9,y-8);
+        g.lineTo(o.x-9,y+8);g.stroke()}}
+    for(const o of hazards)drawEnemyShip({x:o.x,y:o.y+Math.sin(elapsed*2+o.p)*3,hp:1});
+    for(const e of enemies)drawEnemyShip(e);
+    for(const b of bullets){g.fillStyle='#ffcf68';
+      g.shadowColor='#ff9f42';g.shadowBlur=12;
+      g.beginPath();g.ellipse(b.x,b.y,13,4,0,0,Math.PI*2);
+      g.fill();g.shadowBlur=0}
+    for(const b of enemyBullets){g.fillStyle='#ff5f68';
+      g.shadowColor='#ff3f4f';g.shadowBlur=10;
+      g.beginPath();g.arc(b.x,b.y,6,0,Math.PI*2);
+      g.fill();g.shadowBlur=0}
+    const {x,y}=ship;
+    if(keys.has('boost')||pointersHas('boost'))for(let i=0;i<4;
+    i++){g.fillStyle='#ffda6a';g.beginPath();
+      g.ellipse(x-35-i*13,y,7+i*2,5+i,0,0,Math.PI*2);g.fill()}
+    if(space){g.fillStyle='#6347bc';
+      g.beginPath();g.ellipse(x-3,y,26,20,0,0,Math.PI*2);
+      g.fill();g.strokeStyle='#c5b4ff';
+      g.lineWidth=3;g.beginPath();
+      g.moveTo(x+36,y);g.lineTo(x-15,y-19);
+      g.lineTo(x-7,y);g.lineTo(x-15,y+19);
+      g.closePath();g.stroke();
+      circle(x+2,y,5,'#fff7ba');drawFlag(x-25,y-39,'ir',27,16)}
+    else{g.fillStyle='#f3f3e8';
+      g.strokeStyle='#7b604c';g.lineWidth=2;
+      g.beginPath();g.moveTo(x+30,y);
+      g.lineTo(x-16,y-18);g.lineTo(x-10,y-7);
+      g.lineTo(x-25,y);g.lineTo(x-10,y+7);
+      g.lineTo(x-16,y+18);g.closePath();
+      g.fill();g.stroke();
+      g.fillStyle='#dc6548';g.beginPath();
+      g.moveTo(x+19,y);g.lineTo(x-10,y-11);
+      g.lineTo(x-5,y);g.fill();
+      g.fillStyle='#e9d6aa';g.fillRect(x-16,y-6,13,12);
+      g.strokeStyle='#fff0c9';g.beginPath();
+      g.moveTo(x-10,y-12);g.lineTo(x-10,y-34);
+      g.stroke();drawFlag(x-8,y-51,'ir',28,17)}
+    for(const p of particles)circle(p.x,p.y,Math.max(1,p.t*7),p.color);
+    g.fillStyle=space?'#171a43':'#073b58';g.fillRect(0,0,W,55);
+    text(space?'SPACE RUN':'HORMUZ RUN',20,28,17,space?'#c9b5ff':'#ffd166','left');
+    text(`SCORE ${String(score).padStart(5,'0')}`,178,28,13,'#fff','left');
+    text(`STAGE ${stage}`,337,28,13,'#fff','left');text(`CARGO ${cargo}/${goal}`,462,28,13,'#ffe08a','left');
+    text(`COINS ${coins}`,596,28,13,'#ffe08a','left');text('HULL',695,28,11,'#d7eff3','left');
+    for(let i=0;i<maxHealth;
+    i++){g.fillStyle=i<health?'#ff745f':'#466477';g.beginPath();
+      g.moveTo(737+i*17,19);g.lineTo(744+i*17,26);
+      g.lineTo(737+i*17,33);g.lineTo(730+i*17,26);
+      g.fill()}
+    g.fillStyle='#244b60';g.fillRect(875,21,101,11);
+    g.fillStyle='#53ddcc';g.fillRect(875,21,boost,11);
+    g.fillStyle=space?'#28265a':'#064f71';g.fillRect(10,60,980,25);
+    text(`THREAT ${difficulty}  •  ${score<WEAPON_UNLOCK_SCORE?'CANNONS UNLOCK AT 2,000':'HOLD FIRE TO SHOOT'}`,460,73,11,space?'#e3dfff':'#def8f5');
+    g.fillStyle='#146681';g.fillRect(745,56,120,34);g.strokeStyle='#ffd28b';g.lineWidth=2;g.strokeRect(745,56,120,34);
+    text('SETTINGS',805,73,12,'#fff');g.fillStyle='#d25744';
+    g.fillRect(875,60,105,25);g.strokeStyle='#ffd28b';
+    g.strokeRect(875,60,105,25);text('STORE [B]',927,73,11,'#fff');
+    drawMemorialBadge();drawMiniMap();drawControls();
+    if(state!=='playing')overlay();else if(notice>0)text(noticeLabel,500,145,24,'#ffe08a');
+    if(state==='menu'||state==='settings'||state==='controls')drawMemorialBadge();}
+  function pointersHas(v){return [...pointers.values()].includes(v)}
+  function drawMemorialBadge(){
+    const x=16,y=94;
+    g.fillStyle='#08090b';g.fillRect(x,y,204,50);g.strokeStyle='#bdad8d';g.lineWidth=2;g.strokeRect(x,y,204,50);
+    if(memorialPortrait.complete&&memorialPortrait.naturalWidth)g.drawImage(memorialPortrait,x+3,y+3,46,44);
+    g.fillStyle='#030405';g.fillRect(x+3,y+34,46,13);
+    text('MEMORIAL',x+26,y+40,7,'#f0e9dc');
+    text('SAYYED ALI KHAMENEI',x+128,y+19,12,'#fff','center');
+    text('IN REMEMBRANCE',x+128,y+36,9,'#d8c8a7','center');}
+  function drawFlag(x,y,type,w=22,h=13){
+    g.fillStyle='#f3f0e6';g.fillRect(x,y,w,h);
+    if(type==='ir'){g.fillStyle='#159447';g.fillRect(x,y,w,h/3);g.fillStyle='#fff';g.fillRect(x,y+h/3,w,h/3);g.fillStyle='#e3343b';g.fillRect(x,y+2*h/3,w,h/3);
+      g.fillStyle='#d51f35';g.beginPath();g.moveTo(x+w*.5,y+h*.34);g.lineTo(x+w*.59,y+h*.5);g.lineTo(x+w*.5,y+h*.66);
+      g.lineTo(x+w*.41,y+h*.5);g.closePath();g.fill()}
+    else if(type==='us'){g.fillStyle='#bd3443';
+      for(let i=0;i<7;
+      i+=2)g.fillRect(x,y+i*h/7,w,h/7);g.fillStyle='#254779';
+      g.fillRect(x,y,w*.45,h*.55);circle(x+w*.18,y+h*.26,1.2,'#fff')}
+    else if(type==='il'){g.fillStyle='#f5f6f1';
+      g.fillRect(x,y,w,h);g.fillStyle='#3770b8';
+      g.fillRect(x,y+h*.16,w,h*.14);g.fillRect(x,y+h*.7,w,h*.14);
+      g.strokeStyle='#3770b8';g.lineWidth=1.4;
+      g.beginPath();g.moveTo(x+w*.5,y+h*.38);
+      g.lineTo(x+w*.63,y+h*.62);g.lineTo(x+w*.37,y+h*.62);
+      g.closePath();g.moveTo(x+w*.5,y+h*.62);
+      g.lineTo(x+w*.63,y+h*.38);g.lineTo(x+w*.37,y+h*.38);
+      g.closePath();g.stroke()}
+    g.strokeStyle='rgba(20,35,48,.75)';
+    g.lineWidth=1;g.strokeRect(x,y,w,h);}
+  function drawTanker(x,y,flag='ir'){
+    g.save();
+    g.translate(x,y);
+    g.fillStyle='rgba(5,38,57,.32)';g.beginPath();
+    g.ellipse(0,12,42,5,0,0,Math.PI*2);g.fill();
+    g.fillStyle='#263d4a';g.strokeStyle='#e4e8dc';g.lineWidth=2;
+    g.beginPath();g.moveTo(-39,-7);g.lineTo(31,-7);
+    g.lineTo(23,8);g.lineTo(-30,8);g.closePath();g.fill();g.stroke();
+    g.fillStyle='#b84d3e';g.fillRect(-27,1,48,3);
+    g.fillStyle='#d7b06b';
+    for(let i=0;i<4;i++)g.fillRect(-20+i*10,-5,8,6);
+    g.strokeStyle='#e9cb8a';g.beginPath();g.moveTo(-18,-5);g.lineTo(17,-5);g.stroke();
+    g.fillStyle='#f0eee2';g.fillRect(-34,-16,12,9);
+    g.fillStyle='#8fc7d0';g.fillRect(-31,-14,3,3);g.fillRect(-26,-14,3,3);
+    g.fillStyle='#f7d37c';g.fillRect(-36,-12,2,2);
+    g.strokeStyle='#f0eee2';g.lineWidth=1;g.beginPath();g.moveTo(-29,-16);
+    g.lineTo(-29,-29);g.stroke();drawFlag(-28,-29,flag,24,14);
+    g.strokeStyle='rgba(220,250,255,.75)';g.lineWidth=2;g.beginPath();
+    g.moveTo(-48,12);g.quadraticCurveTo(-25,17,0,12);g.stroke();
+    g.restore();}
+  function drawEnemyShip(e){
+    g.save();
+    g.translate(e.x,e.y);
+    g.fillStyle='rgba(7,10,28,.38)';g.beginPath();
+    g.ellipse(0,13,38,6,0,0,Math.PI*2);g.fill();
+    g.fillStyle=space?'#654870':'#49515e';g.strokeStyle='#d1d7df';g.lineWidth=2;
+    g.beginPath();g.moveTo(31,0);g.lineTo(18,-12);g.lineTo(-29,-10);
+    g.lineTo(-36,0);g.lineTo(-25,11);g.lineTo(18,9);g.closePath();g.fill();g.stroke();
+    g.fillStyle='#aab6c4';g.fillRect(-12,-8,23,15);
+    g.fillStyle='#e4e8e4';g.fillRect(-4,-15,13,8);
+    g.fillStyle='#9dc5d7';g.fillRect(-1,-12,4,3);
+    g.fillStyle='#718394';g.fillRect(-22,-2,12,4);
+    g.strokeStyle='#e4e8e4';g.lineWidth=1;g.beginPath();g.moveTo(-20,-8);
+    g.lineTo(-20,-18);g.stroke();drawFlag(-19,-18,'il',21,13);
+    g.fillStyle='#ffbd69';g.fillRect(24,-2,7,4);
+    g.fillStyle='#ffc3c5';g.fillRect(-28,-6,4,3);
+    g.strokeStyle='rgba(255,255,255,.5)';g.beginPath();g.moveTo(-40,12);g.lineTo(-29,14);g.stroke();
+    text('ENEMY',0,25,8,'#ffc3c5');g.restore();}
+  function drawMiniMap(){
+    const x=16,y=150,w=204,h=128;
+    g.save();
+    g.fillStyle='rgba(4,31,54,.88)';
+    g.fillRect(x,y,w,h);g.strokeStyle='#b9d9d9';
+    g.lineWidth=2;g.strokeRect(x,y,w,h);
+    g.fillStyle=space?'#171542':'#096181';g.fillRect(x+5,y+5,w-10,h-10);
+    g.fillStyle='rgba(5,20,35,.94)';g.fillRect(x+w-84,y+6,78,24);
+    g.strokeStyle='#ffd166';g.lineWidth=1;g.strokeRect(x+w-84,y+6,78,24);
+    text(`LEFT ${Math.max(0,WIN_SCORE-score).toLocaleString('en-US')}`,x+w-45,y+13,7,'#ffe08a');
+    g.fillStyle='#31455a';g.fillRect(x+w-80,y+23,70,3);
+    g.fillStyle='#ffd166';g.fillRect(x+w-80,y+23,70*Math.min(1,score/WIN_SCORE),3);
+    if(!space){
+      g.fillStyle='#c9b37e';g.beginPath();
+      g.moveTo(x+6,y+8);g.lineTo(x+w-6,y+8);
+      g.lineTo(x+w-6,y+29);g.quadraticCurveTo(x+145,y+24,x+105,y+34);
+      g.quadraticCurveTo(x+58,y+20,x+6,y+34);g.fill();
+      g.fillStyle='#a98b5c';g.beginPath();
+      g.moveTo(x+6,y+h-8);g.lineTo(x+w-6,y+h-8);
+      g.lineTo(x+w-6,y+h-28);g.quadraticCurveTo(x+132,y+h-24,x+91,y+h-34);
+      g.quadraticCurveTo(x+50,y+h-24,x+6,y+h-29);g.fill();
+      g.setLineDash([4,4]);g.strokeStyle='#f4dc80';
+      g.beginPath();g.moveTo(x+15,y+66);
+      g.quadraticCurveTo(x+100,y+51,x+w-15,y+66);g.stroke();
+      g.setLineDash([]);
+      g.fillStyle='#d7c38e';
+      g.beginPath();g.ellipse(x+125,y+76,12,3,-.1,0,Math.PI*2);
+      g.fill();g.beginPath();
+      g.ellipse(x+160,y+83,5,3,0,0,Math.PI*2);g.fill();
+      text('IRAN',x+57,y+17,10,'#fff5d5');text('OMAN',x+42,y+h-17,9,'#f5e4bd');
+      text('QESHM',x+126,y+88,7,'#fff');text('HORMUZ',x+165,y+96,6,'#fff');
+      drawFlag(x+8,y+7,'ir',42,24);
+      for(const t of tankers){let tx=x+10+(t.x/W)*(w-20),ty=y+39+(t.y/H)*57;drawFlag(tx-4,ty-3,t.flag,8,5)}
+      const startX=x+10+(105/W)*(w-20),startY=y+39+(350/H)*57;
+      circle(startX,startY,3,'#67f0bd');text('START',startX+17,startY+7,6,'#d7ffe9');
+      const px=x+10+(ship.x/W)*(w-20),py=y+39+(ship.y/H)*57;
+      g.shadowColor='#ffe377';g.shadowBlur=10;
+      g.fillStyle='#ffe377';g.beginPath();
+      g.moveTo(px+7,py);g.lineTo(px-5,py-5);
+      g.lineTo(px-5,py+5);g.closePath();
+      g.fill();g.shadowBlur=0;
+    }else{
+      for(const s of stars){circle(x+8+(s.x/W)*(w-16),y+8+(s.y/H)*(h-16),1.2,'#c5d5ff')}
+      const px=x+10+(ship.x/W)*(w-20),py=y+10+(ship.y/H)*(h-20);circle(px,py,4,'#ffe377');
+      text('SPACE RADAR',x+w/2,y+15,9,'#d5c9ff');
+    }
+    g.setLineDash([2,4]);g.strokeStyle='#ffd166';g.lineWidth=1;
+    g.beginPath();g.moveTo(x+14,y+66);g.lineTo(x+w-17,y+66);g.stroke();g.setLineDash([]);
+    circle(x+w-17,y+66,6,'#ff6570');circle(x+w-17,y+66,2,'#fff');
+    text('20K',x+w-20,y+53,7,'#ffe08a');
+    text('END',x+w-18,y+78,7,'#ffe08a');
+    const routeX=x+14+(w-31)*Math.min(1,score/WIN_SCORE);
+    g.save();g.shadowColor='#72ffe1';g.shadowBlur=8;g.fillStyle='#72ffe1';g.beginPath();
+    g.moveTo(routeX+5,y+66);g.lineTo(routeX-4,y+62);g.lineTo(routeX-4,y+70);g.closePath();g.fill();g.restore();
+    g.restore();}
+  function drawControls(){const pads=[[75,600,'left'],[185,600,'right'],[130,550,'up'],[130,650,'down']];for(const [x,y] of pads){circle(x,y,27,'rgba(5,31,56,.48)');
+      g.strokeStyle='rgba(220,245,255,.85)';g.lineWidth=3;
+      g.beginPath();g.moveTo(x-9,y);
+      g.lineTo(x+9,y);g.moveTo(x,y-9);
+      g.lineTo(x,y+9);g.stroke()}circle(805,590,43,score>=2000?'rgba(186,63,59,.88)':'rgba(60,66,80,.8)');
+    text(score>=2000?'FIRE':'LOCK',805,590,12,'#fff');circle(910,590,43,'rgba(103,70,185,.75)');
+    text('BOOST',910,590,12,'#fff')}
+  function overlay(){
+    g.fillStyle='rgba(3,15,35,.72)';g.fillRect(0,0,W,H);
+    if(state==='shop'){drawShop();return}
+    if(state==='menu'){
+      g.fillStyle='#073b58';g.fillRect(250,155,500,415);g.strokeStyle='#56c9c8';g.lineWidth=3;g.strokeRect(250,155,500,415);
+      text('HORMUZ RUN',500,205,38,'#ffd166');text('A Persian Gulf arcade voyage',500,246,16,'#8de3df');
+      drawMenuButton('START GAME',360,278,280,54,'#bd493a');drawMenuButton('SETTINGS',360,350,280,54,'#146681');
+      drawMenuButton('HOW TO PLAY',360,422,280,54,'#146681');text('CARGO • SHIPS • SPACE • UPGRADES',500,520,12,'#c4dfe4');return;
+    }
+    if(state==='settings'){drawSettings();return}if(state==='controls'){drawControlsPage();return}
+    g.fillStyle='#073b58';g.fillRect(205,160,590,360);g.strokeStyle='#56c9c8';g.lineWidth=3;g.strokeRect(205,160,590,360);
+    if(state==='over'){text('VOYAGE OVER',500,232,38,'#ff826f');
+      text('شکست پایان راه نیست آغاز تجربه‌ای تازه است',500,292,19,'#ffe6c2');text(`FINAL SCORE  ${score}`,500,350,23);text('TAP OR PRESS ENTER TO TRY AGAIN',500,430,16,'#ffd166')}
+    else{text('CONGRATULATIONS, CAPTAIN!',500,205,30,'#ffd166');text('پیروزی حاصل ایمان، اراده و تلاش است.',500,250,19,'#ffe6c2');drawIranFlag(430,285,140,78);text('20,000 POINTS REACHED',500,390,18,'#8de3df');text(`FINAL SCORE  ${score}`,500,430,21,'#8de3df');text('TAP OR PRESS ENTER TO PLAY AGAIN',500,480,14,'#ffd166')}}
+  function drawMenuButton(label,x,y,w,h,color){
+    g.fillStyle=color;g.fillRect(x,y,w,h);g.strokeStyle='#f0d18a';g.lineWidth=2;g.strokeRect(x,y,w,h);text(label,x+w/2,y+h/2,16,'#fff');}
+  function drawSettings(){
+    g.fillStyle='#073b58';g.fillRect(250,155,500,415);g.strokeStyle='#56c9c8';g.lineWidth=3;g.strokeRect(250,155,500,415);
+    text('SETTINGS',500,187,29,'#ffd166');
+    drawMenuButton(`AUDIO: ${audioEnabled?'ON':'OFF'}`,370,208,260,48,audioEnabled?'#146681':'#4a5159');
+    drawMenuButton('−',350,270,70,44,'#5a493a');
+    text(`MUSIC ${Math.round(musicVolume*100)}%`,500,292,13,'#fff');drawMenuButton('+',580,270,70,44,'#5a493a');
+    drawMenuButton('−',350,330,70,44,'#5a493a');
+    text(`EFFECTS ${Math.round(effectsVolume*100)}%`,500,352,13,'#fff');drawMenuButton('+',580,330,70,44,'#5a493a');
+    drawMenuButton(`GRAPHICS: ${graphicsQuality.toUpperCase()}`,350,392,300,48,'#146681');
+    drawMenuButton(`LANGUAGE: ${language==='fa'?'PERSIAN':'ENGLISH'}`,350,445,300,42,'#146681');
+    drawMenuButton('BACK',400,500,200,48,'#5a493a');}
+  function drawControlsPage(){
+    g.fillStyle='#073b58';g.fillRect(250,155,500,415);g.strokeStyle='#56c9c8';g.lineWidth=3;g.strokeRect(250,155,500,415);
+    text('HOW TO PLAY',500,205,30,'#ffd166');text('Move: WASD, arrow keys or touch arrows',500,270,15,'#fff');text('Boost: Space or purple button',500,315,15,'#fff');
+    text('Fire unlocks at 2,000 points: F or FIRE button',500,360,15,'#fff');text('Store: B or STORE button • collect cargo for coins',500,405,14,'#fff');
+    text('Reach 1,000 points to enter the moving star field',500,450,13,'#d8c8ff');drawMenuButton('BACK',400,495,200,48,'#5a493a');}
+  function handleMenuClick(p){
+    if(state==='menu'){
+      if(p.x>=350&&p.x<=650&&p.y>=270&&p.y<=340){start();return}
+      if(p.x>=350&&p.x<=650&&p.y>=342&&p.y<=412){state='settings';return}if(p.x>=350&&p.x<=650&&p.y>=414&&p.y<=484){state='controls';return}
+    }else if(state==='settings'){
+      if(p.x>=360&&p.x<=640&&p.y>=205&&p.y<=265){audioEnabled=!audioEnabled;if(audioEnabled){try{audioContext??=new (window.AudioContext||window.webkitAudioContext)();audioContext.resume();startMusic();playTone(660,.09)}catch(_error){}}else stopMusic();return}
+      if(p.y>=265&&p.y<=320&&p.x>=330&&p.x<=440){musicVolume=clamp(musicVolume-.1,0,1);if(!musicVolume)stopMusic();return}
+      if(p.y>=265&&p.y<=320&&p.x>=560&&p.x<=670){musicVolume=clamp(musicVolume+.1,0,1);if(musicVolume)startMusic();return}
+      if(p.y>=325&&p.y<=385&&p.x>=330&&p.x<=440){effectsVolume=clamp(effectsVolume-.1,0,1);return}
+      if(p.y>=325&&p.y<=385&&p.x>=560&&p.x<=670){effectsVolume=clamp(effectsVolume+.1,0,1);return}
+      if(p.x>=340&&p.x<=660&&p.y>=388&&p.y<=445){graphicsQuality=graphicsQuality==='high'?'low':'high';return}
+      if(p.x>=340&&p.x<=660&&p.y>=440&&p.y<=490){language=language==='fa'?'en':'fa';localStorage.setItem('hormuz-language',language);return}
+      if(p.y>=490&&p.y<=555){state='menu';return}
+    }else if(state==='controls'&&p.y>=485&&p.y<=550){state='menu'}}
+  function shopItems(){return[
+    {id:'rapid',name:'Rapid fire',detail:`Level ${upgrades.rapid}/5 • faster shots`,cost:4+upgrades.rapid*4,max:5},
+    {id:'cannon',name:'Double cannon',detail:upgrades.cannon?'Owned • two-shot volley':'Adds a second barrel',cost:12,max:1},
+    {id:'damage',name:'Heavy torpedoes',detail:`Damage ${upgrades.damage}/4`,cost:10+(upgrades.damage-1)*8,max:4},
+    {id:'armor',name:'Reinforced hull',detail:`Hull capacity ${maxHealth}/5`,cost:12+(maxHealth-3)*8,max:2},
+    {id:'engine',name:'Engine upgrade',detail:`Level ${upgrades.engine}/3 • faster movement`,cost:9+upgrades.engine*5,max:3},
+    {id:'repair',name:'Repair hull',detail:`Restore to ${maxHealth} hull`,cost:4,max:99}]}
+  function drawShop(){
+    g.fillStyle='#073b58';g.fillRect(160,115,680,465);g.strokeStyle='#ffd166';g.lineWidth=3;g.strokeRect(160,115,680,465);
+    text('CAPTAIN’S STORE',500,151,29,'#ffd166');
+    text(`COINS: ${coins}     •     Tap an item to buy`,500,184,15,'#d5eaf0');
+    shopItems().forEach((it,i)=>{let col=i%2,row=Math.floor(i/2),x=195+col*310,y=220+row*105;
+      g.fillStyle='#104e69';g.fillRect(x,y,285,82);
+      g.strokeStyle='#69cbd0';g.lineWidth=1;
+      g.strokeRect(x,y,285,82);
+      text(it.name,x+12,y+20,15,'#fff','left');
+      text(it.detail,x+12,y+45,11,'#c3e2e7','left');
+      let owned=(it.id==='cannon'&&upgrades.cannon>=it.max)||(it.id==='rapid'&&upgrades.rapid>=it.max)||(it.id==='damage'&&upgrades.damage>=it.max)||(it.id==='engine'&&upgrades.engine>=it.max)||(it.id==='armor'&&maxHealth>=5);
+      text(it.id==='repair'?`BUY ${it.cost}`:owned?'MAX':`BUY ${it.cost}`,x+242,y+65,11,owned?'#83d3ac':'#ffd166');
+    });
+    g.fillStyle='#a8433d';g.fillRect(422,535,156,34);
+    text('CLOSE  [B]',500,552,14,'#fff');}
+  function buyAt(p){
+    if(p.x>420&&p.x<580&&p.y>525&&p.y<580){state='playing';
+      return}
+    if(p.y<220||p.y>520||p.x<190||p.x>810)return;
+    let col=p.x<500?0:1,row=Math.floor((p.y-220)/105),idx=row*2+col,it=shopItems()[idx];
+    if(!it)return;
+    let level=it.id==='armor'?maxHealth-3:upgrades[it.id]||0;
+    if(it.id!=='repair'&&level>=it.max)return;
+    if(coins<it.cost)return;
+    coins-=it.cost;
+    if(it.id==='rapid')upgrades.rapid++;
+    if(it.id==='cannon')upgrades.cannon=1;
+    if(it.id==='damage')upgrades.damage++;
+    if(it.id==='armor'){maxHealth=Math.min(5,maxHealth+1);health=Math.min(maxHealth,health+1)}
+    if(it.id==='engine')upgrades.engine++;
+    if(it.id==='repair')health=maxHealth;}
+  function pointerPos(e){let r=c.getBoundingClientRect();
+    return{x:(e.clientX-r.left)*W/r.width,y:(e.clientY-r.top)*H/r.height}}
+  function pointerControl(p){let x=p.x,y=p.y;const pads=[[75,600,'left'],[185,600,'right'],[130,550,'up'],[130,650,'down'],[805,590,'fire'],[910,590,'boost']];
+    let best=pads.map(a=>[Math.hypot(x-a[0],y-a[1]),a[2]]).sort((a,b)=>a[0]-b[0])[0];if(best[0]<58)return best[1];
+    if(y>500&&x<260)return'left';if(y>500&&x>800)return'fire';
+    let wy=H-y;return x<250?'left':x>750?'right':wy>ship.y?'up':'down'}
+  c.addEventListener('pointerdown',e=>{e.preventDefault();
+    c.setPointerCapture(e.pointerId);let p=pointerPos(e);
+    if(state==='menu'||state==='settings'||state==='controls'){handleMenuClick(p);draw();return}
+    if(state==='shop'){buyAt(p);draw();
+      return}if(state!=='playing'){start();return}if(p.y>=54&&p.y<=92&&p.x>=740&&p.x<870){state='settings';
+      draw();return}if(p.y>=58&&p.y<=90&&p.x>=865){state='shop';
+      draw();return}pointers.set(e.pointerId,pointerControl(p));
+    draw()});
+  c.addEventListener('pointermove',e=>{if(!pointers.has(e.pointerId))return;
+    let p=pointerPos(e);pointers.set(e.pointerId,pointerControl(p))});
+  function release(e){pointers.delete(e.pointerId)}c.addEventListener('pointerup',release);c.addEventListener('pointercancel',release);
+  const keyMap={ArrowUp:'up',ArrowDown:'down',ArrowLeft:'left',ArrowRight:'right',w:'up',s:'down',a:'left',d:'right',f:'fire',' ':'boost'};
+  window.addEventListener('keydown',e=>{let k=keyMap[e.key.toLowerCase()];
+    if(k){keys.add(k);e.preventDefault()}
+    if(e.key.toLowerCase()==='b'&&state==='playing'){state='shop';draw()}
+    else if(e.key.toLowerCase()==='b'&&state==='shop'){state='playing';draw()}
+    if(e.key==='Escape'&&(state==='settings'||state==='controls')){state='menu';draw()}
+    if(e.key==='Escape'&&state==='shop'){state='playing';draw()}
+    if(e.key==='Enter'&&state==='menu')start();
+    else if(e.key==='Enter'&&(state==='settings'||state==='controls')){state='menu';draw()}
+    else if(e.key==='Enter'&&(state==='over'||state==='win'))start()});window.addEventListener('keyup',e=>keys.delete(keyMap[e.key.toLowerCase()]));
+  function frame(t){let dt=last?(t-last)/1000:0;last=t;
+    update(dt);draw();
+    requestAnimationFrame(frame)}requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
